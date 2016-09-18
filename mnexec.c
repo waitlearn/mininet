@@ -29,7 +29,7 @@
 #define VERSION "(devel)"
 #endif
 
-void usage(char *name) 
+void usage(char *name)
 {
     printf("Execution utility for Mininet\n\n"
            "Usage: %s [-cdnp] [-a pid] [-g group] [-r rtprio] cmd args...\n\n"
@@ -99,6 +99,8 @@ int main(int argc, char *argv[])
     char path[PATH_MAX];
     int nsid;
     int pid;
+    char *cwd = get_current_dir_name();
+
     static struct sched_param sp;
     while ((c = getopt(argc, argv, "+cdnpa:g:r:vh")) != -1)
         switch(c) {
@@ -128,6 +130,16 @@ int main(int argc, char *argv[])
                 perror("unshare");
                 return 1;
             }
+
+            /* Mark our whole hierarchy recursively as private, so that our
+             * mounts do not propagate to other processes.
+             */
+
+            if (mount("none", "/", NULL, MS_REC|MS_PRIVATE, NULL) == -1) {
+                perror("remount");
+                return 1;
+            }
+
             /* mount sysfs to pick up the new network namespace */
             if (mount("sysfs", "/sys", "sysfs", MS_MGC_VAL, NULL) == -1) {
                 perror("mount");
@@ -140,9 +152,9 @@ int main(int argc, char *argv[])
             fflush(stdout);
             break;
         case 'a':
-            /* Attach to pid's network namespace and mount namespace*/
+            /* Attach to pid's network namespace and mount namespace */
             pid = atoi(optarg);
-            sprintf(path, "/proc/%d/ns/net", pid );
+            sprintf(path, "/proc/%d/ns/net", pid);
             nsid = open(path, O_RDONLY);
             if (nsid < 0) {
                 perror(path);
@@ -152,14 +164,20 @@ int main(int argc, char *argv[])
                 perror("setns");
                 return 1;
             }
-            sprintf(path, "/proc/%d/ns/mnt", pid );
+            /* Plan A: call setns() to attach to mount namespace */
+            sprintf(path, "/proc/%d/ns/mnt", pid);
             nsid = open(path, O_RDONLY);
-            if (nsid < 0) {
-                perror(path);
-                return 1;
+            if (nsid < 0 || setns(nsid, 0) != 0) {
+                /* Plan B: chroot/chdir into pid's root file system */
+                sprintf(path, "/proc/%d/root", pid);
+                if (chroot(path) < 0) {
+                    perror(path);
+                    return 1;
+                }
             }
-            if (setns(nsid, 0) != 0) {
-                perror("setns");
+            /* chdir to correct working directory */
+            if (chdir(cwd) != 0) {
+                perror(cwd);
                 return 1;
             }
             break;
@@ -183,7 +201,7 @@ int main(int argc, char *argv[])
             exit(0);
         default:
             usage(argv[0]);
-            exit(1); 
+            exit(1);
         }
 
     if (optind < argc) {
@@ -191,7 +209,7 @@ int main(int argc, char *argv[])
         perror(argv[optind]);
         return 1;
     }
-    
+
     usage(argv[0]);
 
     return 0;
